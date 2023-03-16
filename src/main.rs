@@ -2,56 +2,38 @@
 #![no_main]
 
 use core::cell::RefCell;
+
 use critical_section::Mutex;
-
-use esp32c3_hal::{
-    interrupt,
-    clock::{ClockControl, CpuClock},
-    gpio::{Event, Floating, Gpio19, Input, Pin},
-    prelude::*,
-    system::SystemExt,
-    systimer::SystemTimer,
-    Rng, Rtc, peripherals::{self, Peripherals},
-};
-
-/*
-use esp32c3_hal::{
-    clock::{CpuClock, ClockControl},
-    interrupt,
-    peripherals::{self, Peripherals, TIMG0, TIMG1},
-    prelude::*,
-    timer::{Timer, Timer0, TimerGroup},
-    Rtc,
-};
- */
-
-use riscv_rt::{entry};
-
 use embedded_svc::{
     ipv4::Interface,
+    wifi::AccessPointInfo,
     wifi::{ClientConfiguration, Configuration, Wifi},
 };
-
-
+use esp32c3_hal::{
+    clock::{ClockControl, CpuClock},
+    gpio::{Event, Floating, Gpio19, Input, Pin},
+    interrupt,
+    peripherals::{self, Peripherals},
+    prelude::*,
+    riscv,
+    system::SystemExt,
+    systimer::SystemTimer,
+    Rng, Rtc,
+};
 use esp_backtrace as _;
 use esp_println::{logger::init_logger, println};
-
 use esp_wifi::{
-    create_network_stack_storage, network_stack_storage, wifi::utils::create_network_interface,
-    wifi_interface::Network,
+    wifi::{utils::create_network_interface, WifiError, WifiMode},
+    wifi_interface::WifiStack,
 };
-
 use heapless::mpmc::MpMcQueue;
-
 use infrared::{
-    remotecontrol::{Action, Button},
+    protocol::SamsungNec,
+    remotecontrol::{nec::SamsungTv, Action, Button},
     Receiver,
 };
-use infrared::protocol::SamsungNec;
-use infrared::remotecontrol::nec::SamsungTv;
 use mqttrust::{encoding::v4::Pid, MqttError};
-use smoltcp::wire::Ipv4Address;
-
+use smoltcp::{iface::SocketStorage, wire::Ipv4Address};
 
 use crate::{pins::Pins, tiny_mqtt::TinyMqtt};
 
@@ -96,7 +78,6 @@ fn GPIO() {
     });
 }
 
-
 #[entry]
 fn main() -> ! {
     init_logger(log::LevelFilter::Info);
@@ -128,20 +109,16 @@ fn main() -> ! {
 
     critical_section::with(|cs| IR_RECV.borrow_ref_mut(cs).replace(ir_recv));
 
-    interrupt::enable(
-        peripherals::Interrupt::GPIO,
-        interrupt::Priority::Priority3,
-    )
-    .unwrap();
+    interrupt::enable(peripherals::Interrupt::GPIO, interrupt::Priority::Priority3).unwrap();
 
     unsafe {
         riscv::interrupt::enable();
     }
 
-
-    let mut storage = create_network_stack_storage!(3, 8, 1, 1);
-    let ethernet = create_network_interface(network_stack_storage!(storage));
-    let mut wifi_interface = esp_wifi::wifi_interface::Wifi::new(ethernet);
+    let mut socket_set_entries: [SocketStorage; 3] = Default::default();
+    let (iface, device, mut controller, sockets) =
+        create_network_interface(WifiMode::Sta, &mut socket_set_entries);
+    let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
     let rng = Rng::new(peripherals.RNG);
     let syst = SystemTimer::new(peripherals.SYSTIMER);
@@ -153,56 +130,65 @@ fn main() -> ! {
         loop {}
     }
 
-    println!("Wifi started: {:?}", wifi_interface.is_started());
-
-    let host_bytes: [u8; 4] = MQTT_HOST_BYTES;
-
-    println!("Call wifi_connect");
     let client_config = Configuration::Client(ClientConfiguration {
         ssid: SSID.into(),
         password: PASSWORD.into(),
         ..Default::default()
     });
-    let res = wifi_interface.set_configuration(&client_config);
-    println!("wifi_connect returned {:?}", res);
-    println!("  Cap   : {:?}", wifi_interface.get_capabilities());
+    let res = controller.set_configuration(&client_config);
+    println!("wifi_set_configuration returned {:?}", res);
 
-    led.set_high().unwrap();
+    controller.start().unwrap();
+    println!("is wifi started: {:?}", controller.is_started());
 
-    wifi_interface.connect().unwrap();
+    println!("Start Wifi Scan");
+    let res: Result<(heapless::Vec<AccessPointInfo, 10>, usize), WifiError> = controller.scan_n();
+    if let Ok((res, _count)) = res {
+        for ap in res {
+            println!("{:?}", ap);
+        }
+    }
+
+    println!("{:?}", controller.get_capabilities());
+    println!("wifi_connect {:?}", controller.connect());
 
     // wait to get connected
+    println!("Wait to get connected");
     loop {
-        let connected = wifi_interface.is_connected();
-
-        match connected {
-            Ok(true) => break,
-            Ok(false) => continue,
+        let res = controller.is_connected();
+        match res {
+            Ok(connected) => {
+                if connected {
+                    break;
+                }
+            }
             Err(err) => {
-                println!("Error connecting: {:?}", err);
+                println!("{:?}", err);
                 loop {}
             }
         }
     }
-    println!("Connected: {:?}", wifi_interface.is_connected());
-    println!("Starting dhcp client");
+    println!("{:?}", controller.is_connected());
 
-    let network = Network::new(wifi_interface, current_millis);
-
+    // wait for getting an ip address
+    println!("Wait to get an ip address");
     loop {
-        network.poll_dhcp().unwrap();
-        network.work();
-        if network.is_iface_up() {
+        wifi_stack.work();
+
+        if wifi_stack.is_iface_up() {
+            println!("got ip {:?}", wifi_stack.get_ip_info());
             break;
         }
     }
 
-    println!("Got ip: {:?}", network.get_ip_info());
-    println!("Trying to connect to: {:?}", host_bytes);
+    println!("Start busy loop on main");
+
+    let host_bytes: [u8; 4] = MQTT_HOST_BYTES;
+    led.set_high().unwrap();
 
     let mut rx_buffer = [0u8; 1536];
     let mut tx_buffer = [0u8; 1536];
-    let mut socket = network.get_socket(&mut rx_buffer, &mut tx_buffer);
+    let mut socket = wifi_stack.get_socket(&mut rx_buffer, &mut tx_buffer);
     let mqtt_host = Ipv4Address::from_bytes(&host_bytes);
     socket.open(mqtt_host, 1883).unwrap();
     let mut mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
@@ -243,7 +229,6 @@ fn main() -> ! {
         println!("Disconnecting");
         mqtt.disconnect().ok();
     }
-
 }
 
 fn publish_cmd(
@@ -287,4 +272,3 @@ const fn mqtt_host_bytes() -> [u8; 4] {
 
     res
 }
-

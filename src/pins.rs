@@ -1,6 +1,7 @@
 use esp32c3_hal::{
     gpio::{Gpio18, Gpio19, Gpio2, Gpio3, Gpio4, Gpio5, Unknown},
-    IO, peripherals::{GPIO, IO_MUX},
+    peripherals::{GPIO, IO_MUX},
+    IO,
 };
 
 pub struct Pins {
