@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-esp32c3-hal = "0.7.0"
+esp32c3-hal = "0.8.0"
 log = "0.4.16"
 embedded-hal = "0.2"
 esp-println = { version = "0.4.0", features = ["esp32c3", "uart", "log"] }
-esp-backtrace     = { version = "0.6.0", features = ["esp32c3", "panic-handler", "exception-handler", "print-uart"] }
+esp-backtrace = { version = "0.6.0", features = ["esp32c3", "panic-handler", "exception-handler", "print-uart"] }
 critical-section = "1.1.0"
 embedded-svc = { version = "0.23.0", default-features = false}
 embedded-io = "0.4.0"
@@ -25,7 +25,7 @@ features = ["proto-igmp", "proto-ipv4", "socket-tcp", "socket-icmp", "socket-udp
 
 [dependencies.esp-wifi]
 git = "https://github.com/esp-rs/esp-wifi"
-rev = "97763904f939aacda00fbce4d8a3c1ba18a703bd"
+rev = "74e9f182ddd3c978b7ad4e86801da0811c4d1aa5"
 features = ["esp32c3", "embedded-svc", "wifi"]
 
 [build-dependencies]

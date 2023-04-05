@@ -114,16 +114,16 @@ fn main() -> ! {
     unsafe {
         riscv::interrupt::enable();
     }
-
+let (wifi, _) = peripherals.RADIO.split();
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let (iface, device, mut controller, sockets) =
-        create_network_interface(WifiMode::Sta, &mut socket_set_entries);
+        create_network_interface( wifi, WifiMode::Sta,&mut socket_set_entries);
     let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
     let rng = Rng::new(peripherals.RNG);
     let syst = SystemTimer::new(peripherals.SYSTIMER);
 
-    let r = esp_wifi::initialize(syst.alarm0, rng, &clocks);
+    let r = esp_wifi::initialize(syst.alarm0, rng, system.radio_clock_control, &clocks);
 
     if let Err(e) = r {
         println!("Err: {:?}", e);
